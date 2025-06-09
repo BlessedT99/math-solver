@@ -361,8 +361,8 @@ app.use((error, req, res, next) => {
   });
 });
 
-// 404 handler
-app.use('*', (req, res) => {
+// Fixed 404 handler - removed the problematic '*' wildcard
+app.use((req, res) => {
   res.status(404).json({
     success: false,
     error: 'Endpoint not found',
