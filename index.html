@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid Math Solver</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="text"], textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        .error {
+            background: #fee;
+            border-left-color: #e74c3c;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+        }
+        .examples {
+            margin-top: 20px;
+            padding: 15px;
+            background: #e8f4f8;
+            border-radius: 8px;
+        }
+        .example-btn {
+            background: #17a2b8;
+            padding: 5px 10px;
+            margin: 3px;
+            font-size: 12px;
+            border-radius: 5px;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧮 Hybrid Math Solver</h1>
+        <p style="text-align: center; color: #666;">Powered by Google Gemini AI</p>
+        
+        <div class="input-group">
+            <label for="problem">Enter your math problem:</label>
+            <textarea id="problem" placeholder="Example: Find the derivative of x^2 + 3x + 2"></textarea>
+        </div>
+        
+        <button onclick="solveProblem()" id="solveBtn">🚀 Solve Problem</button>
+        
+        <div class="examples">
+            <strong>Try these examples:</strong><br>
+            <button class="example-btn" onclick="setExample('Find the derivative of x^2 + 3x + 2')">Derivative</button>
+            <button class="example-btn" onclick="setExample('Simplify (x^2 + 2x + 1)')">Simplify</button>
+            <button class="example-btn" onclick="setExample('Factor x^2 + 5x + 6')">Factor</button>
+            <button class="example-btn" onclick="setExample('What are the zeros of x^2 - 4?')">Find Zeros</button>
+            <button class="example-btn" onclick="setExample('Integrate 2x + 3')">Integrate</button>
+        </div>
+        
+        <div id="result" style="display: none;"></div>
+        
+        <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 8px; font-size: 14px;">
+            <strong>📝 Instructions:</strong>
+            <ol>
+                <li>Make sure your Node.js server is running on port 3000</li>
+                <li>Set your GEMINI_API_KEY environment variable</li>
+                <li>Save this HTML file and open it in your browser</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+        
+        function setExample(problem) {
+            document.getElementById('problem').value = problem;
+        }
+        
+        async function solveProblem() {
+            const problemText = document.getElementById('problem').value.trim();
+            const resultDiv = document.getElementById('result');
+            const solveBtn = document.getElementById('solveBtn');
+            
+            if (!problemText) {
+                alert('Please enter a math problem!');
+                return;
+            }
+            
+            // Show loading
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'result loading';
+            resultDiv.innerHTML = '🔄 Solving your problem...';
+            solveBtn.disabled = true;
+            
+            try {
+                const response = await fetch(`${API_BASE}/solve`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ problem: problemText })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    resultDiv.className = 'result';
+                    resultDiv.innerHTML = `
+                        <h3>✅ Solution</h3>
+                        <p><strong>Problem:</strong> ${data.originalProblem}</p>
+                        <p><strong>Operation:</strong> ${data.analysis.operation}</p>
+                        <p><strong>Expression:</strong> ${data.analysis.expression}</p>
+                        <p><strong>Result:</strong> <code>${data.calculation.result}</code></p>
+                        
+                        <h4>📖 Explanation:</h4>
+                        <div style="background: white; padding: 15px; border-radius: 5px;">
+                            ${data.explanation.replace(/\n/g, '<br>')}
+                        </div>
+                        
+                        <details style="margin-top: 15px;">
+                            <summary style="cursor: pointer; font-weight: bold;">🔍 Technical Details</summary>
+                            <pre>${JSON.stringify(data, null, 2)}</pre>
+                        </details>
+                    `;
+                } else {
+                    throw new Error(data.error || 'Unknown error');
+                }
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `
+                    <h3>❌ Error</h3>
+                    <p><strong>Could not solve the problem:</strong> ${error.message}</p>
+                    <p><strong>Possible fixes:</strong></p>
+                    <ul>
+                        <li>Make sure your server is running: <code>node server.js</code></li>
+                        <li>Check that your GEMINI_API_KEY is set</li>
+                        <li>Verify the server is accessible at ${API_BASE}</li>
+                    </ul>
+                `;
+            } finally {
+                solveBtn.disabled = false;
+            }
+        }
+        
+        // Test server connection on page load
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+                console.log('✅ Server is running:', data);
+            } catch (error) {
+                console.warn('⚠️ Server not accessible:', error.message);
+            }
+        });
+        
+        // Allow Enter key to submit
+        document.getElementById('problem').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                solveProblem();
+            }
+        });
+    </script>
+</body>
+</html>
