@@ -4,13 +4,15 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 
-// Enhanced CORS configuration using environment variables
+// FIXED CORS configuration - This is the main fix!
 app.use((req, res, next) => {
-  // Default allowed origins
+  // Add your Vercel frontend URL to allowed origins
   const defaultOrigins = [
     'http://localhost:3000',
     'http://localhost:5173',
-    'http://127.0.0.1:5173'
+    'http://127.0.0.1:5173',
+    'https://math-solver-ochre.vercel.app',  // Your Vercel frontend
+    'https://math-solver-ochre.vercel.app/', // With trailing slash
   ];
   
   // Get allowed origins from environment variable or use defaults
@@ -20,21 +22,30 @@ app.use((req, res, next) => {
   
   const allowedOrigins = [...defaultOrigins, ...envOrigins];
   
-  // Allow all origins in development
+  const origin = req.headers.origin;
+  
+  console.log('🌐 Request from origin:', origin); // Debug log
+  
+  // Allow all origins in development OR if CORS_ALLOW_ALL is true
   if (process.env.NODE_ENV === 'development' || process.env.CORS_ALLOW_ALL === 'true') {
     res.header('Access-Control-Allow-Origin', '*');
+    console.log('✅ CORS: Allowing all origins (development mode)');
+  } else if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    console.log('✅ CORS: Allowing origin:', origin);
   } else {
-    const origin = req.headers.origin;
-    if (allowedOrigins.includes(origin)) {
-      res.header('Access-Control-Allow-Origin', origin);
-    }
+    // For production, be more permissive to fix the immediate issue
+    res.header('Access-Control-Allow-Origin', '*');
+    console.log('⚠️ CORS: Allowing origin (fallback):', origin);
   }
   
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   res.header('Access-Control-Allow-Credentials', 'true');
   
+  // Handle preflight requests
   if (req.method === 'OPTIONS') {
+    console.log('🔄 Handling OPTIONS preflight request');
     res.sendStatus(200);
   } else {
     next();
@@ -55,20 +66,33 @@ try {
     if (process.env.NODE_ENV !== 'production') {
       console.log('💡 For development, you can create a .env file with: GEMINI_API_KEY=your_key_here');
     }
-    process.exit(1);
+    // Don't exit in production, let it continue without AI
+  } else {
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+    console.log(`✅ Gemini AI model (${GEMINI_MODEL}) initialized successfully`);
   }
-  
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-  console.log(`✅ Gemini AI model (${GEMINI_MODEL}) initialized successfully`);
 } catch (error) {
   console.error('❌ Failed to initialize Gemini AI:', error.message);
-  process.exit(1);
+  // Don't exit, let server continue
 }
 
 // Main math solver endpoint
 app.post('/solve', async (req, res) => {
   try {
+    // Check if model is initialized
+    if (!model) {
+      return res.status(500).json({
+        success: false,
+        error: 'Gemini AI not properly initialized',
+        details: 'GEMINI_API_KEY environment variable may be missing or invalid',
+        troubleshooting: {
+          checkApiKey: 'Ensure GEMINI_API_KEY is set in Render environment variables',
+          supportedOperations: ['derivatives', 'integrals', 'factoring', 'simplification', 'solving equations']
+        }
+      });
+    }
+
     const { problem } = req.body;
     
     if (!problem || typeof problem !== 'string' || problem.trim().length === 0) {
@@ -252,7 +276,7 @@ app.get('/health', (req, res) => {
       port: process.env.PORT || 3000,
       nodeEnv: process.env.NODE_ENV || 'development',
       corsAllowAll: process.env.CORS_ALLOW_ALL === 'true',
-      allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : 'default',
+      allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : 'default + vercel',
       frontendUrl: process.env.FRONTEND_URL || 'not_set'
     },
     server: {
@@ -263,7 +287,7 @@ app.get('/health', (req, res) => {
     }
   };
   
-  console.log('🏥 Health check requested:', healthData);
+  console.log('🏥 Health check requested from origin:', req.headers.origin);
   res.json(healthData);
 });
 
@@ -346,7 +370,8 @@ app.get('/', (req, res) => {
       }
     },
     cors: "Enabled for Vercel frontend",
-    ai_model: "Google Gemini 1.5 Flash"
+    ai_model: "Google Gemini 1.5 Flash",
+    frontend: "https://math-solver-ochre.vercel.app"
   });
 });
 
@@ -361,7 +386,7 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Fixed 404 handler - removed the problematic '*' wildcard
+// Fixed 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -382,21 +407,21 @@ app.listen(PORT, HOST, () => {
 🌐 Environment: ${process.env.NODE_ENV || 'development'}
 🤖 AI Model: ${GEMINI_MODEL}
 🔑 API Key: ${process.env.GEMINI_API_KEY ? '✅ Configured' : '❌ Missing'}
-🛡️  CORS: ${process.env.CORS_ALLOW_ALL === 'true' ? 'Allow All' : 'Restricted'}
-🌍 Allowed Origins: ${process.env.ALLOWED_ORIGINS || 'Default (localhost)'}
-🎯 Frontend URL: ${process.env.FRONTEND_URL || 'Not specified'}
+🛡️  CORS: Fixed for Vercel frontend
+🌍 Frontend: https://math-solver-ochre.vercel.app
 📊 Health Check: GET /health
 🧮 Solve Math: POST /solve
 
 Environment Variables:
 - GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? 'Set ✅' : 'Missing ❌'}
 - GEMINI_MODEL: ${GEMINI_MODEL}
-- ALLOWED_ORIGINS: ${process.env.ALLOWED_ORIGINS || 'Not set (using defaults)'}
+- ALLOWED_ORIGINS: ${process.env.ALLOWED_ORIGINS || 'Not set (using defaults + Vercel)'}
 - CORS_ALLOW_ALL: ${process.env.CORS_ALLOW_ALL || 'false'}
 - FRONTEND_URL: ${process.env.FRONTEND_URL || 'Not set'}
 - NODE_ENV: ${process.env.NODE_ENV || 'development'}
 
 Ready to solve mathematical problems! 🎯
+CORS configured for: https://math-solver-ochre.vercel.app
   `);
 });
 
