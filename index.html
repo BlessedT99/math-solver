@@ -89,6 +89,12 @@
             margin: 3px;
             font-size: 12px;
             border-radius: 5px;
+            border: none;
+            color: white;
+            cursor: pointer;
+        }
+        .example-btn:hover {
+            background: #138496;
         }
         pre {
             background: #f4f4f4;
@@ -97,12 +103,34 @@
             overflow-x: auto;
             white-space: pre-wrap;
         }
+        .status {
+            text-align: center;
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.checking {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🧮 Hybrid Math Solver</h1>
-        <p style="text-align: center; color: #666;">Powered by Google Gemini AI</p>
+        <div id="connectionStatus" class="status checking">🔄 Checking server connection...</div>
         
         <div class="input-group">
             <label for="problem">Enter your math problem:</label>
@@ -121,19 +149,31 @@
         </div>
         
         <div id="result" style="display: none;"></div>
-        
-        <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 8px; font-size: 14px;">
-            <strong>📝 Instructions:</strong>
-            <ol>
-                <li>Make sure your Node.js server is running on port 3000</li>
-                <li>Set your GEMINI_API_KEY environment variable</li>
-                <li>Save this HTML file and open it in your browser</li>
-            </ol>
-        </div>
     </div>
 
     <script>
-        const API_BASE = 'http://localhost:3000';
+        // Configuration for different environments
+        const API_BASE = 'https://math-solver-wi1e.onrender.com';
+        
+        // Connection status management
+        let serverConnected = false;
+        
+        function updateConnectionStatus(connected, message = '') {
+            const statusDiv = document.getElementById('connectionStatus');
+            const solveBtn = document.getElementById('solveBtn');
+            
+            if (connected) {
+                statusDiv.className = 'status connected';
+                statusDiv.innerHTML = '✅ Connected to server - Ready to solve math problems!';
+                solveBtn.disabled = false;
+                serverConnected = true;
+            } else {
+                statusDiv.className = 'status disconnected';
+                statusDiv.innerHTML = `❌ Server connection failed${message ? ': ' + message : ''}`;
+                solveBtn.disabled = true;
+                serverConnected = false;
+            }
+        }
         
         function setExample(problem) {
             document.getElementById('problem').value = problem;
@@ -146,6 +186,11 @@
             
             if (!problemText) {
                 alert('Please enter a math problem!');
+                return;
+            }
+            
+            if (!serverConnected) {
+                alert('Server is not connected. Please wait for connection or refresh the page.');
                 return;
             }
             
@@ -164,6 +209,10 @@
                     body: JSON.stringify({ problem: problemText })
                 });
                 
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status} ${response.statusText}`);
+                }
+                
                 const data = await response.json();
                 
                 if (data.success) {
@@ -181,24 +230,31 @@
                         </div>
                         
                         <details style="margin-top: 15px;">
-                            <summary style="cursor: pointer; font-weight: bold;">🔍 Technical Details</summary>
+                            <summary style="cursor: pointer; font-weight: bold;">🔍 Step-by-Step Solution</summary>
+                            <pre>${data.calculation.steps || 'Steps not available'}</pre>
+                        </details>
+                        
+                        <details style="margin-top: 10px;">
+                            <summary style="cursor: pointer; font-weight: bold;">🔧 Technical Details</summary>
                             <pre>${JSON.stringify(data, null, 2)}</pre>
                         </details>
                     `;
                 } else {
-                    throw new Error(data.error || 'Unknown error');
+                    throw new Error(data.error || 'Unknown error from server');
                 }
                 
             } catch (error) {
+                console.error('Error solving problem:', error);
                 resultDiv.className = 'result error';
                 resultDiv.innerHTML = `
                     <h3>❌ Error</h3>
                     <p><strong>Could not solve the problem:</strong> ${error.message}</p>
-                    <p><strong>Possible fixes:</strong></p>
+                    <p><strong>Server URL:</strong> ${API_BASE}</p>
+                    <p><strong>Troubleshooting:</strong></p>
                     <ul>
-                        <li>Make sure your server is running: <code>node server.js</code></li>
-                        <li>Check that your GEMINI_API_KEY is set</li>
-                        <li>Verify the server is accessible at ${API_BASE}</li>
+                        <li>Check if the server is running at <a href="${API_BASE}/health" target="_blank">${API_BASE}/health</a></li>
+                        <li>Verify the GEMINI_API_KEY is configured on the server</li>
+                        <li>Try refreshing the page to reconnect</li>
                     </ul>
                 `;
             } finally {
@@ -206,21 +262,62 @@
             }
         }
         
-        // Test server connection on page load
-        window.addEventListener('load', async () => {
-            try {
-                const response = await fetch(`${API_BASE}/health`);
-                const data = await response.json();
-                console.log('✅ Server is running:', data);
-            } catch (error) {
-                console.warn('⚠️ Server not accessible:', error.message);
+        // Test server connection with retry logic
+        async function testServerConnection(retries = 3) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    console.log(`Testing server connection (attempt ${i + 1}/${retries})...`);
+                    
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+                    
+                    const response = await fetch(`${API_BASE}/health`, {
+                        signal: controller.signal,
+                        method: 'GET'
+                    });
+                    
+                    clearTimeout(timeoutId);
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        console.log('✅ Server connected:', data);
+                        updateConnectionStatus(true);
+                        return true;
+                    } else {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                } catch (error) {
+                    console.warn(`Connection attempt ${i + 1} failed:`, error.message);
+                    
+                    if (i === retries - 1) {
+                        // Last attempt failed
+                        updateConnectionStatus(false, error.message);
+                        return false;
+                    }
+                    
+                    // Wait before retrying (exponential backoff)
+                    await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+                }
             }
+            return false;
+        }
+        
+        // Initialize connection test on page load
+        window.addEventListener('load', async () => {
+            await testServerConnection();
         });
         
         // Allow Enter key to submit
         document.getElementById('problem').addEventListener('keypress', function(e) {
             if (e.key === 'Enter' && e.ctrlKey) {
                 solveProblem();
+            }
+        });
+        
+        // Add retry connection button functionality
+        document.addEventListener('click', function(e) {
+            if (e.target.textContent === 'Retry Connection') {
+                testServerConnection();
             }
         });
     </script>

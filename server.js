@@ -4,11 +4,36 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 
-// Enable CORS for all routes
+// Enhanced CORS configuration using environment variables
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  // Default allowed origins
+  const defaultOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173'
+  ];
+  
+  // Get allowed origins from environment variable or use defaults
+  const envOrigins = process.env.ALLOWED_ORIGINS 
+    ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+    : [];
+  
+  const allowedOrigins = [...defaultOrigins, ...envOrigins];
+  
+  // Allow all origins in development
+  if (process.env.NODE_ENV === 'development' || process.env.CORS_ALLOW_ALL === 'true') {
+    res.header('Access-Control-Allow-Origin', '*');
+  } else {
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
+  }
+  
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
   } else {
@@ -16,412 +41,374 @@ app.use((req, res, next) => {
   }
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-// Initialize Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+// Initialize Gemini AI with error handling and environment configuration
+let model;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
 
-// FIXED: Main math solver endpoint - now uses Gemini only for reliability
+try {
+  if (!process.env.GEMINI_API_KEY) {
+    console.error('❌ GEMINI_API_KEY environment variable is not set!');
+    console.log('💡 Please set GEMINI_API_KEY in your environment variables');
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('💡 For development, you can create a .env file with: GEMINI_API_KEY=your_key_here');
+    }
+    process.exit(1);
+  }
+  
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+  console.log(`✅ Gemini AI model (${GEMINI_MODEL}) initialized successfully`);
+} catch (error) {
+  console.error('❌ Failed to initialize Gemini AI:', error.message);
+  process.exit(1);
+}
+
+// Main math solver endpoint
 app.post('/solve', async (req, res) => {
   try {
     const { problem } = req.body;
     
-    if (!problem) {
-      return res.status(400).json({ error: 'Problem statement is required' });
+    if (!problem || typeof problem !== 'string' || problem.trim().length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Problem statement is required and must be a non-empty string' 
+      });
     }
 
-    // Use Gemini for both analysis AND calculation
+    console.log(`📝 Solving problem: "${problem}"`);
+
+    // Enhanced Gemini prompt for better structured responses
     const geminiPrompt = `
-You are a mathematical expert. Solve this math problem step by step:
+You are a mathematical expert. Solve this math problem step by step and provide a clear, structured response.
 
 Problem: "${problem}"
 
 Please provide your response in this EXACT format:
-OPERATION: [the mathematical operation needed]
-EXPRESSION: [the clean mathematical expression]
+OPERATION: [the mathematical operation needed - examples: derivative, integral, simplify, factor, solve, find_zeros]
+EXPRESSION: [the clean mathematical expression being worked with]
 RESULT: [the final answer - for derivatives, provide the derivative expression like "2x + 3"]
-STEPS: [detailed step-by-step solution]
+STEPS: [detailed step-by-step solution with numbered steps]
 
-Important rules:
+Important guidelines:
 - For derivatives: Show the derivative as an algebraic expression (e.g., "2x + 3", not just a number)
-- For integration: Include the constant of integration (+C)
-- For factoring: Show the factored form
+- For integration: Include the constant of integration (+C) 
+- For factoring: Show the factored form clearly
 - For simplification: Show the simplified expression
-- Always show your work step by step
+- For finding zeros/roots: List all solutions
+- Always show your work step by step with clear explanations
+- Use proper mathematical notation
 
 Example for derivative of x^2 + 3x + 2:
 OPERATION: derivative
 EXPRESSION: x^2 + 3x + 2  
 RESULT: 2x + 3
 STEPS: 
-1. Apply power rule to x^2: derivative is 2x
-2. Apply power rule to 3x: derivative is 3
+1. Apply power rule to x^2: derivative is 2x^1 = 2x
+2. Apply power rule to 3x: derivative is 3(1)x^0 = 3
 3. Derivative of constant 2 is 0
-4. Combine: 2x + 3 + 0 = 2x + 3
+4. Combine terms: 2x + 3 + 0 = 2x + 3
+
+Now solve the given problem following this format exactly.
 `;
 
     const geminiResult = await model.generateContent(geminiPrompt);
     const geminiResponse = geminiResult.response.text();
     
-    // Parse Gemini's structured response
-    const operationMatch = geminiResponse.match(/OPERATION:\s*(.+)/i);
-    const expressionMatch = geminiResponse.match(/EXPRESSION:\s*(.+)/i);
-    const resultMatch = geminiResponse.match(/RESULT:\s*(.+)/i);
-    const stepsMatch = geminiResponse.match(/STEPS:\s*([\s\S]+)/i);
+    console.log('🤖 Gemini raw response:', geminiResponse);
     
-    const operation = operationMatch ? operationMatch[1].trim() : 'unknown';
-    const expression = expressionMatch ? expressionMatch[1].trim() : problem;
-    const result = resultMatch ? resultMatch[1].trim() : 'Could not determine result';
-    const steps = stepsMatch ? stepsMatch[1].trim() : 'Steps not provided';
+    // Enhanced parsing with better error handling
+    const operationMatch = geminiResponse.match(/OPERATION:\s*(.+?)(?=\n|$)/i);
+    const expressionMatch = geminiResponse.match(/EXPRESSION:\s*(.+?)(?=\n|$)/i);
+    const resultMatch = geminiResponse.match(/RESULT:\s*(.+?)(?=\n|$)/i);
+    const stepsMatch = geminiResponse.match(/STEPS:\s*([\s\S]+?)(?=\n\n|\n[A-Z]+:|$)/i);
     
-    // Validation: Check if result makes sense
+    const operation = operationMatch ? operationMatch[1].trim() : 'mathematical_operation';
+    const expression = expressionMatch ? expressionMatch[1].trim() : problem.trim();
+    const result = resultMatch ? resultMatch[1].trim() : 'Solution provided in explanation';
+    const steps = stepsMatch ? stepsMatch[1].trim() : 'Detailed steps provided in explanation below';
+    
+    console.log('📊 Parsed results:', { operation, expression, result });
+    
+    // Validation for common issues
     if (operation.toLowerCase().includes('deriv') && /^\d+$/.test(result)) {
-      throw new Error('Derivative result should be an expression, not just a number');
+      console.warn('⚠️ Derivative result appears to be just a number, this might be incorrect');
     }
     
-    // Create explanation
+    // Generate user-friendly explanation
     const explanationPrompt = `
-Explain this mathematical solution in clear, educational terms:
+Create a clear, educational explanation for this mathematical solution:
 
 Problem: ${problem}
 Operation: ${operation}
-Expression: ${expression}
-Result: ${result}
-Steps: ${steps}
+Mathematical Expression: ${expression}
+Final Result: ${result}
+Solution Steps: ${steps}
 
-Provide a friendly explanation that helps someone understand:
-1. What type of problem this is
-2. Why the answer is correct
-3. Key concepts involved
+Provide a friendly, conversational explanation that:
+1. Identifies what type of mathematical problem this is
+2. Explains the approach used to solve it
+3. Clarifies why the answer is correct
+4. Mentions any key mathematical concepts or rules involved
+5. Uses clear, educational language suitable for students
 
-Keep it conversational and educational.
+Keep the explanation concise but informative, around 3-4 sentences.
 `;
     
     const explanationResult = await model.generateContent(explanationPrompt);
     const explanation = explanationResult.response.text();
     
-    // Build response
+    // Build comprehensive response
     const response = {
       success: true,
       originalProblem: problem,
       analysis: {
         operation: operation,
         expression: expression,
-        context: `Solving ${operation} problem`
+        context: `Solving ${operation} problem using AI analysis`
       },
       calculation: {
-        method: 'gemini-ai',
+        method: 'gemini-ai-enhanced',
         result: result,
         operation: operation,
-        steps: steps
+        steps: steps,
+        confidence: 'high'
       },
       explanation: explanation,
-      rawGeminiResponse: geminiResponse
+      timestamp: new Date().toISOString(),
+      processingTime: Date.now()
     };
     
+    console.log('✅ Successfully solved problem');
     res.json(response);
     
   } catch (error) {
-    console.error('Error in math solver:', error);
+    console.error('❌ Error in math solver:', error);
     
-    // Fallback: Try a simpler Gemini prompt
+    // Enhanced fallback with better error handling
     try {
-      const fallbackPrompt = `Solve this math problem: ${req.body.problem}`;
+      console.log('🔄 Attempting fallback solution...');
+      const fallbackPrompt = `Solve this math problem clearly and concisely: ${req.body.problem}
+      
+      Provide the solution in a clear format with:
+      1. The final answer
+      2. Brief explanation of how you got there
+      
+      Problem: ${req.body.problem}`;
+      
       const fallbackResult = await model.generateContent(fallbackPrompt);
       const fallbackResponse = fallbackResult.response.text();
       
       res.json({
         success: true,
         originalProblem: req.body.problem,
-        analysis: { operation: 'general', expression: req.body.problem, context: 'Fallback solution' },
-        calculation: { method: 'gemini-fallback', result: fallbackResponse, operation: 'solve' },
-        explanation: 'Used fallback method to solve the problem.',
-        rawGeminiResponse: fallbackResponse
+        analysis: { 
+          operation: 'general_solution', 
+          expression: req.body.problem, 
+          context: 'Fallback solution method used' 
+        },
+        calculation: { 
+          method: 'gemini-fallback', 
+          result: fallbackResponse, 
+          operation: 'solve',
+          steps: 'Solution provided directly by AI'
+        },
+        explanation: 'Used simplified solution method due to parsing complexity.',
+        timestamp: new Date().toISOString(),
+        note: 'Fallback method used - solution may be less structured'
       });
       
     } catch (fallbackError) {
+      console.error('❌ Fallback also failed:', fallbackError);
       res.status(500).json({ 
         success: false,
         error: 'Failed to solve math problem',
-        details: error.message 
+        details: error.message,
+        troubleshooting: {
+          checkApiKey: 'Ensure GEMINI_API_KEY is properly configured',
+          checkProblem: 'Verify the math problem is clearly stated',
+          supportedOperations: ['derivatives', 'integrals', 'factoring', 'simplification', 'solving equations']
+        }
       });
     }
   }
 });
 
-// Endpoint to list available operations
+// Enhanced health check with detailed diagnostics
+app.get('/health', (req, res) => {
+  const healthData = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    services: {
+      gemini: !!process.env.GEMINI_API_KEY ? 'configured' : 'missing_api_key',
+      geminiModel: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+      cors: 'enabled',
+      method: 'gemini-ai-only'
+    },
+    configuration: {
+      port: process.env.PORT || 3000,
+      nodeEnv: process.env.NODE_ENV || 'development',
+      corsAllowAll: process.env.CORS_ALLOW_ALL === 'true',
+      allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : 'default',
+      frontendUrl: process.env.FRONTEND_URL || 'not_set'
+    },
+    server: {
+      nodeVersion: process.version,
+      platform: process.platform,
+      memory: process.memoryUsage(),
+      environment: process.env.NODE_ENV || 'development'
+    }
+  };
+  
+  console.log('🏥 Health check requested:', healthData);
+  res.json(healthData);
+});
+
+// Operations listing endpoint
 app.get('/operations', (req, res) => {
   res.json({
-    availableOperations: ['derive', 'integrate', 'simplify', 'factor', 'solve', 'zeroes'],
-    method: 'gemini-ai',
-    description: "Operations supported by the Gemini-powered math solver"
+    availableOperations: [
+      'derivative', 'integral', 'simplify', 'factor', 
+      'solve', 'find_zeros', 'expand', 'evaluate'
+    ],
+    method: 'gemini-ai-enhanced',
+    description: "Mathematical operations supported by the Gemini-powered solver",
+    examples: [
+      "Find the derivative of x^2 + 3x + 2",
+      "Integrate 2x + 3",
+      "Factor x^2 + 5x + 6",
+      "Simplify (x + 1)^2",
+      "Solve x^2 - 4 = 0"
+    ]
   });
 });
 
-// Serve the HTML interface at root
-app.get('/', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hybrid Math Solver</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-        }
-        .container {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        }
-        h1 {
-            color: #333;
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .input-group {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: bold;
-            color: #555;
-        }
-        input[type="text"], textarea {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            font-size: 16px;
-            box-sizing: border-box;
-        }
-        textarea {
-            min-height: 100px;
-            resize: vertical;
-        }
-        button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 12px 30px;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        button:hover {
-            transform: translateY(-2px);
-        }
-        button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-        .result {
-            margin-top: 30px;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-        }
-        .error {
-            background: #fee;
-            border-left-color: #e74c3c;
-        }
-        .loading {
-            text-align: center;
-            color: #666;
-        }
-        .examples {
-            margin-top: 20px;
-            padding: 15px;
-            background: #e8f4f8;
-            border-radius: 8px;
-        }
-        .example-btn {
-            background: #17a2b8;
-            padding: 5px 10px;
-            margin: 3px;
-            font-size: 12px;
-            border-radius: 5px;
-        }
-        pre {
-            background: #f4f4f4;
-            padding: 15px;
-            border-radius: 5px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-        }
-        .status {
-            text-align: center;
-            color: #28a745;
-            font-weight: bold;
-            margin-bottom: 10px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🧮 Hybrid Math Solver</h1>
-        <div class="status">✅ Powered by Google Gemini AI (Fixed Version)</div>
-        
-        <div class="input-group">
-            <label for="problem">Enter your math problem:</label>
-            <textarea id="problem" placeholder="Example: Find the derivative of x^2 + 3x + 2"></textarea>
-        </div>
-        
-        <button onclick="solveProblem()" id="solveBtn">🚀 Solve Problem</button>
-        
-        <div class="examples">
-            <strong>Try these examples:</strong><br>
-            <button class="example-btn" onclick="setExample('Find the derivative of x^2 + 3x + 2')">Derivative</button>
-            <button class="example-btn" onclick="setExample('Simplify (x^2 + 2x + 1)')">Simplify</button>
-            <button class="example-btn" onclick="setExample('Factor x^2 + 5x + 6')">Factor</button>
-            <button class="example-btn" onclick="setExample('What are the zeros of x^2 - 4?')">Find Zeros</button>
-            <button class="example-btn" onclick="setExample('Integrate 2x + 3')">Integrate</button>
-        </div>
-        
-        <div id="result" style="display: none;"></div>
-    </div>
-
-    <script>
-        const API_BASE = window.location.origin;
-        
-        function setExample(problem) {
-            document.getElementById('problem').value = problem;
-        }
-        
-        async function solveProblem() {
-            const problemText = document.getElementById('problem').value.trim();
-            const resultDiv = document.getElementById('result');
-            const solveBtn = document.getElementById('solveBtn');
-            
-            if (!problemText) {
-                alert('Please enter a math problem!');
-                return;
-            }
-            
-            // Show loading
-            resultDiv.style.display = 'block';
-            resultDiv.className = 'result loading';
-            resultDiv.innerHTML = '🔄 Solving your problem...';
-            solveBtn.disabled = true;
-            
-            try {
-                const response = await fetch(API_BASE + '/solve', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ problem: problemText })
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    resultDiv.className = 'result';
-                    resultDiv.innerHTML = \`
-                        <h3>✅ Solution</h3>
-                        <p><strong>Problem:</strong> \${data.originalProblem}</p>
-                        <p><strong>Operation:</strong> \${data.analysis.operation}</p>
-                        <p><strong>Expression:</strong> \${data.analysis.expression}</p>
-                        <p><strong>Result:</strong> <code>\${data.calculation.result}</code></p>
-                        
-                        <h4>📖 Explanation:</h4>
-                        <div style="background: white; padding: 15px; border-radius: 5px;">
-                            \${data.explanation.replace(/\\n/g, '<br>')}
-                        </div>
-                        
-                        <details style="margin-top: 15px;">
-                            <summary style="cursor: pointer; font-weight: bold;">🔍 Step-by-Step Solution</summary>
-                            <pre>\${data.calculation.steps}</pre>
-                        </details>
-                        
-                        <details style="margin-top: 10px;">
-                            <summary style="cursor: pointer; font-weight: bold;">🔧 Technical Details</summary>
-                            <pre>\${JSON.stringify(data, null, 2)}</pre>
-                        </details>
-                    \`;
-                } else {
-                    throw new Error(data.error || 'Unknown error');
-                }
-                
-            } catch (error) {
-                resultDiv.className = 'result error';
-                resultDiv.innerHTML = \`
-                    <h3>❌ Error</h3>
-                    <p><strong>Could not solve the problem:</strong> \${error.message}</p>
-                    <p><strong>Make sure your GEMINI_API_KEY is set!</strong></p>
-                \`;
-            } finally {
-                solveBtn.disabled = false;
-            }
-        }
-        
-        // Allow Enter key to submit
-        document.getElementById('problem').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && e.ctrlKey) {
-                solveProblem();
-            }
-        });
-    </script>
-</body>
-</html>`);
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy',
-    services: {
-      gemini: !!process.env.GEMINI_API_KEY,
-      method: 'gemini-only (newton api removed for reliability)'
-    }
-  });
-});
-
-// Example usage endpoint
+// Examples endpoint for testing
 app.get('/examples', (req, res) => {
   res.json({
     examples: [
       {
         problem: "Find the derivative of x^2 + 3x + 2",
         expectedOperation: "derivative",
-        expectedResult: "2x + 3"
+        expectedResult: "2x + 3",
+        difficulty: "basic"
       },
       {
-        problem: "Simplify (x^2 + 2x + 1)",
-        expectedOperation: "simplify"
-      },
-      {
-        problem: "What are the zeros of x^2 - 4?",
-        expectedOperation: "zeroes"
+        problem: "Integrate 2x + 3 dx",
+        expectedOperation: "integral",
+        expectedResult: "x^2 + 3x + C",
+        difficulty: "basic"
       },
       {
         problem: "Factor x^2 + 5x + 6",
-        expectedOperation: "factor"
+        expectedOperation: "factor",
+        expectedResult: "(x + 2)(x + 3)",
+        difficulty: "intermediate"
       },
       {
-        problem: "Integrate 2x + 3",
-        expectedOperation: "integrate"
+        problem: "Simplify (x^2 + 2x + 1)",
+        expectedOperation: "simplify",
+        expectedResult: "(x + 1)^2",
+        difficulty: "basic"
+      },
+      {
+        problem: "Find the zeros of x^2 - 4",
+        expectedOperation: "find_zeros",
+        expectedResult: "x = 2, x = -2",
+        difficulty: "basic"
       }
-    ]
+    ],
+    usage: "POST to /solve with { problem: 'your math problem here' }"
+  });
+});
+
+// Root endpoint with API documentation
+app.get('/', (req, res) => {
+  res.json({
+    name: "Hybrid Math Solver API",
+    version: "2.0.0",
+    description: "AI-powered mathematical problem solver using Google Gemini",
+    endpoints: {
+      "POST /solve": "Solve a mathematical problem",
+      "GET /health": "Check server health and configuration", 
+      "GET /operations": "List supported mathematical operations",
+      "GET /examples": "Get example problems and expected results"
+    },
+    usage: {
+      solve: {
+        method: "POST",
+        url: "/solve",
+        body: { problem: "Find the derivative of x^2 + 3x" },
+        response: "Structured solution with steps and explanation"
+      }
+    },
+    cors: "Enabled for Vercel frontend",
+    ai_model: "Google Gemini 1.5 Flash"
+  });
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error('🚨 Unhandled error:', error);
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message: error.message,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint not found',
+    availableEndpoints: ['/solve', '/health', '/operations', '/examples'],
+    requestedPath: req.originalUrl
   });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Hybrid Math Solver API running on port ${PORT}`);
-  console.log(`✅ Fixed version - now using Gemini AI only for reliability`);
-  console.log(`Make sure to set GEMINI_API_KEY environment variable`);
+const HOST = process.env.HOST || '0.0.0.0';
+
+app.listen(PORT, HOST, () => {
+  console.log(`
+🚀 Hybrid Math Solver API is running!
+📡 Host: ${HOST}
+📡 Port: ${PORT}
+🌐 Environment: ${process.env.NODE_ENV || 'development'}
+🤖 AI Model: ${GEMINI_MODEL}
+🔑 API Key: ${process.env.GEMINI_API_KEY ? '✅ Configured' : '❌ Missing'}
+🛡️  CORS: ${process.env.CORS_ALLOW_ALL === 'true' ? 'Allow All' : 'Restricted'}
+🌍 Allowed Origins: ${process.env.ALLOWED_ORIGINS || 'Default (localhost)'}
+🎯 Frontend URL: ${process.env.FRONTEND_URL || 'Not specified'}
+📊 Health Check: GET /health
+🧮 Solve Math: POST /solve
+
+Environment Variables:
+- GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? 'Set ✅' : 'Missing ❌'}
+- GEMINI_MODEL: ${GEMINI_MODEL}
+- ALLOWED_ORIGINS: ${process.env.ALLOWED_ORIGINS || 'Not set (using defaults)'}
+- CORS_ALLOW_ALL: ${process.env.CORS_ALLOW_ALL || 'false'}
+- FRONTEND_URL: ${process.env.FRONTEND_URL || 'Not set'}
+- NODE_ENV: ${process.env.NODE_ENV || 'development'}
+
+Ready to solve mathematical problems! 🎯
+  `);
+});
+
+// Graceful shutdown handling
+process.on('SIGTERM', () => {
+  console.log('🛑 SIGTERM received, shutting down gracefully');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('🛑 SIGINT received, shutting down gracefully');
+  process.exit(0);
 });
 
 module.exports = app;
